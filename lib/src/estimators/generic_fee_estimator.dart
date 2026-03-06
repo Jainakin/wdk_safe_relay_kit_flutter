@@ -19,10 +19,11 @@ class GenericFeeEstimator implements IFeeEstimator {
   Future<UserOperation> postEstimateUserOperationGas(
     EstimateFeeContext context,
   ) async {
-    final bundler = BundlerClient(
-      bundlerUrl: context.bundlerUrl,
-      entryPointAddress: context.entryPoint,
-    );
+    final bundler = context.bundlerClient ??
+        BundlerClient(
+          bundlerUrl: context.bundlerUrl,
+          entryPointAddress: context.entryPoint,
+        );
     final gas = await bundler.estimateUserOperationGas(
       userOperation: context.userOperation,
       entryPoint: context.entryPoint,

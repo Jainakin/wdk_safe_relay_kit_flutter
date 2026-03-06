@@ -5,10 +5,12 @@ library wdk_safe_relay_kit_flutter;
 
 export 'src/bundler_client.dart';
 export 'src/constants.dart';
+export 'src/deployments/safe_4337_deployments.dart';
 export 'src/encoding/call_data_encoder.dart';
 export 'src/estimators/generic_fee_estimator.dart';
 export 'src/estimators/ifee_estimator.dart';
 export 'src/estimators/pimlico_fee_estimator.dart';
+export 'src/operation_hash.dart';
 export 'src/paymaster_client.dart';
 export 'src/safe_4337_pack.dart';
 export 'src/safe_address_prediction.dart' show predictSafeAddress;

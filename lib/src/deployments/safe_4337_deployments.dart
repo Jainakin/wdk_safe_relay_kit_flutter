@@ -10,14 +10,16 @@
 /// `safe-module-setup.json`). Address prediction throws [ArgumentError]
 /// when no deployment exists for the given chainId and safeModulesVersion.
 final Map<int, Map<String, Safe4337Deployment>> safe4337Deployments = {
-  // Ethereum mainnet (chainId 1)
+  // Ethereum mainnet (chainId 1). Verified against safe-modules-deployments
+  // safe-4337-module/v0.3.0/safe-4337-module.json and safe-module-setup.json.
   1: {
     '0.3.0': const Safe4337Deployment(
       safe4337ModuleAddress: '0x75cf11467937ce3F2f357CE24ffc3DBF8fD5c226',
       safeModulesSetupAddress: '0x2dd68b007B46fBe91B9A7c3EDa5A7a1063cB5b47',
     ),
   },
-  // Sepolia testnet (chainId 11155111)
+  // Sepolia (chainId 11155111). Same addresses as mainnet for v0.3.0 per
+  // safe-modules-deployments (networkAddresses "1" and "11155111").
   11155111: {
     '0.3.0': const Safe4337Deployment(
       safe4337ModuleAddress: '0x75cf11467937ce3F2f357CE24ffc3DBF8fD5c226',

@@ -1,3 +1,4 @@
+import 'package:wdk_safe_relay_kit_flutter/src/bundler_client.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/types/paymaster_options.dart';
 
 /// Options for an existing deployed Safe.
@@ -44,6 +45,7 @@ class Safe4337InitOptions {
     this.safeModulesVersion = '0.3.0',
     this.customContracts,
     this.paymasterOptions,
+    this.bundlerClient,
   });
 
   /// RPC provider (e.g. Web3Client or custom client).
@@ -51,6 +53,10 @@ class Safe4337InitOptions {
 
   /// Bundler service URL.
   final String bundlerUrl;
+
+  /// Optional bundler client (e.g. for testing with a mock).
+  /// When set, used instead of creating one from [bundlerUrl].
+  final BundlerClient? bundlerClient;
 
   /// Either ExistingSafeOptions or PredictedSafeOptions.
   final Object options;

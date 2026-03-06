@@ -1,5 +1,8 @@
-/// ERC-4337 UserOperation (EntryPoint v0.6 / v0.7 shape).
+/// ERC-4337 UserOperation (EntryPoint v0.6 / v0.7 common shape).
 ///
+/// Covers the shared fields used by most bundlers. EntryPoint v0.7-specific
+/// fields (e.g. signature aggregator address/data) can be added here and in
+/// bundler serialization when a bundler or chain requires them.
 /// See https://eips.ethereum.org/EIPS/eip-4337
 class UserOperation {
   const UserOperation({

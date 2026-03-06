@@ -1,6 +1,7 @@
 import 'package:wdk_safe_relay_kit_flutter/src/bundler_client.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/constants.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/encoding/call_data_encoder.dart';
+import 'package:wdk_safe_relay_kit_flutter/src/encoding/signature_encoder.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/estimators/ifee_estimator.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/paymaster_client.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/safe_address_prediction.dart'
@@ -13,6 +14,7 @@ import 'package:wdk_safe_relay_kit_flutter/src/types/meta_transaction_data.dart'
 import 'package:wdk_safe_relay_kit_flutter/src/types/user_operation.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/types/user_operation_receipt.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/types/user_operation_with_payload.dart';
+import 'package:web3dart/web3dart.dart' show Web3Client;
 
 /// Safe ERC-4337 pack: create, sign, execute UserOperations for Safe accounts.
 class Safe4337Pack {
@@ -23,7 +25,10 @@ class Safe4337Pack {
     this.paymasterClient,
     this.signer,
     this.chainId,
-  });
+    List<String>? owners,
+    int? threshold,
+  })  : _owners = owners,
+        _threshold = threshold;
 
   final BundlerClient bundlerClient;
   final String entryPointAddress;
@@ -31,6 +36,12 @@ class Safe4337Pack {
   final PaymasterClient? paymasterClient;
   dynamic signer;
   final int? chainId;
+
+  /// Owners (ascending order) and threshold from init when using
+  /// PredictedSafeOptions. Used to encode SafeOperation.signatures into
+  /// UserOperation.signature.
+  final List<String>? _owners;
+  final int? _threshold;
 
   /// Predicts the Safe proxy address (static).
   static Future<String> predictSafeAddress({
@@ -54,7 +65,8 @@ class Safe4337Pack {
   /// Creates a [Safe4337Pack] instance (async init).
   static Future<Safe4337Pack> init(Safe4337InitOptions options) async {
     final bundlerUrl = options.bundlerUrl;
-    final bundler = BundlerClient(bundlerUrl: bundlerUrl);
+    final bundler =
+        options.bundlerClient ?? BundlerClient(bundlerUrl: bundlerUrl);
 
     var entryPoint =
         options.customContracts?.entryPointAddress ?? defaultEntryPointV07;
@@ -62,6 +74,8 @@ class Safe4337Pack {
       final supported = await bundler.getSupportedEntryPoints();
       if (supported.isNotEmpty) entryPoint = supported.first;
     }
+
+    final resolvedChainId = await _chainIdFromProvider(options.provider);
 
     String safeAddr;
     if (options.options is ExistingSafeOptions) {
@@ -71,7 +85,7 @@ class Safe4337Pack {
       safeAddr = await safe_address_prediction.predictSafeAddress(
         owners: pred.owners,
         threshold: pred.threshold,
-        chainId: _chainIdFromProvider(options.provider),
+        chainId: resolvedChainId,
         safeVersion: pred.safeVersion,
         safeModulesVersion: options.safeModulesVersion,
         saltNonce: pred.saltNonce,
@@ -80,11 +94,22 @@ class Safe4337Pack {
 
     PaymasterClient? pm;
     if (options.paymasterOptions != null) {
+      final po = options.paymasterOptions!;
       pm = PaymasterClient(
-        paymasterUrl: options.paymasterOptions!.paymasterUrl,
-        paymasterAddress: options.paymasterOptions!.paymasterAddress,
-        paymasterTokenAddress: options.paymasterOptions!.paymasterTokenAddress,
+        paymasterUrl: po.paymasterUrl,
+        paymasterAddress: po.paymasterAddress,
+        paymasterTokenAddress: po.paymasterTokenAddress,
+        isSponsored: po.isSponsored,
+        sponsorshipPolicyId: po.sponsorshipPolicyId,
       );
+    }
+
+    List<String>? owners;
+    int? threshold;
+    if (options.options is PredictedSafeOptions) {
+      final pred = options.options as PredictedSafeOptions;
+      owners = List<String>.from(pred.owners)..sort(_addressCompare);
+      threshold = pred.threshold;
     }
 
     return Safe4337Pack._(
@@ -93,11 +118,28 @@ class Safe4337Pack {
       safeAddress: safeAddr,
       paymasterClient: pm,
       signer: options.signer,
-      chainId: _chainIdFromProvider(options.provider),
+      chainId: resolvedChainId,
+      owners: owners,
+      threshold: threshold,
     );
   }
 
-  static int _chainIdFromProvider(dynamic provider) {
+  static int _addressCompare(String a, String b) {
+    final ah = a.toLowerCase().replaceFirst(RegExp('^0x'), '');
+    final bh = b.toLowerCase().replaceFirst(RegExp('^0x'), '');
+    return ah.compareTo(bh);
+  }
+
+  /// Resolves chain ID from provider (e.g. web3dart Web3Client.getChainId()).
+  /// Returns 1 when provider is null or does not support getChainId.
+  static Future<int> _chainIdFromProvider(dynamic provider) async {
+    if (provider == null) return 1;
+    try {
+      if (provider is Web3Client) {
+        final result = await provider.getChainId();
+        return result.toInt();
+      }
+    } catch (_) {}
     return 1;
   }
 
@@ -109,6 +151,8 @@ class Safe4337Pack {
     options ??= const CreateTransactionOptions();
     final feeEstimator = options.feeEstimator;
 
+    final paymasterAndData = _buildPaymasterAndData(options);
+
     var userOp = UserOperation(
       sender: safeAddress,
       nonce: options.customNonce ?? BigInt.zero,
@@ -119,44 +163,42 @@ class Safe4337Pack {
       preVerificationGas: BigInt.from(21000),
       maxFeePerGas: BigInt.from(100000000000),
       maxPriorityFeePerGas: BigInt.from(1000000000),
-      paymasterAndData: '0x',
+      paymasterAndData: paymasterAndData,
       signature: '0x',
     );
 
-    if (feeEstimator != null) {
-      userOp = await feeEstimator.preEstimateUserOperationGas(
-        EstimateFeeContext(
-          userOperation: userOp,
-          bundlerUrl: bundlerClient.bundlerUrl,
-          entryPoint: entryPointAddress,
-        ),
-      );
-      final gas = await bundlerClient.estimateUserOperationGas(
-        userOperation: userOp,
+    if (paymasterClient != null && paymasterClient!.isSponsored) {
+      final pmData = await paymasterClient!.getPaymasterAndData(
+        userOpParams: BundlerClient.userOpToParams(userOp),
         entryPoint: entryPointAddress,
+        amountToApprove: options.amountToApprove,
+        paymasterTokenAddress: options.paymasterTokenAddress ??
+            paymasterClient!.paymasterTokenAddress,
       );
       userOp = UserOperation(
         sender: userOp.sender,
         nonce: userOp.nonce,
         initCode: userOp.initCode,
         callData: userOp.callData,
-        callGasLimit: gas['callGasLimit'] ?? userOp.callGasLimit,
-        verificationGasLimit:
-            gas['verificationGasLimit'] ?? userOp.verificationGasLimit,
-        preVerificationGas:
-            gas['preVerificationGas'] ?? userOp.preVerificationGas,
+        callGasLimit: userOp.callGasLimit,
+        verificationGasLimit: userOp.verificationGasLimit,
+        preVerificationGas: userOp.preVerificationGas,
         maxFeePerGas: userOp.maxFeePerGas,
         maxPriorityFeePerGas: userOp.maxPriorityFeePerGas,
-        paymasterAndData: userOp.paymasterAndData,
+        paymasterAndData: pmData,
         signature: userOp.signature,
       );
-      userOp = await feeEstimator.postEstimateUserOperationGas(
-        EstimateFeeContext(
-          userOperation: userOp,
-          bundlerUrl: bundlerClient.bundlerUrl,
-          entryPoint: entryPointAddress,
-        ),
+    }
+
+    if (feeEstimator != null) {
+      final context = EstimateFeeContext(
+        userOperation: userOp,
+        bundlerUrl: bundlerClient.bundlerUrl,
+        entryPoint: entryPointAddress,
+        bundlerClient: bundlerClient,
       );
+      userOp = await feeEstimator.preEstimateUserOperationGas(context);
+      userOp = await feeEstimator.postEstimateUserOperationGas(context);
     }
 
     return SafeOperation(transactions: transactions, userOperation: userOp);
@@ -164,6 +206,47 @@ class Safe4337Pack {
 
   String _encodeBatchCallData(List<MetaTransactionData> transactions) {
     return encodeSafe4337CallData(transactions);
+  }
+
+  /// Builds paymasterAndData when pack has a paymaster and options
+  /// provide validity.
+  String _buildPaymasterAndData(CreateTransactionOptions options) {
+    final pm = paymasterClient;
+    if (pm == null || pm.paymasterAddress == null) return '0x';
+    final addr = pm.paymasterAddress!;
+    final validAfter = options.validAfter ?? 0;
+    final validUntil = options.validUntil ?? 0;
+    return _encodePaymasterAndData(
+      addr,
+      validAfter,
+      validUntil,
+      amountToApprove: options.amountToApprove,
+      paymasterTokenAddress: options.paymasterTokenAddress,
+    );
+  }
+
+  static String _encodePaymasterAndData(
+    String paymasterAddress,
+    int validAfter,
+    int validUntil, {
+    BigInt? amountToApprove,
+    String? paymasterTokenAddress,
+  }) {
+    final hex =
+        paymasterAddress.replaceFirst(RegExp('^0x'), '').padLeft(40, '0');
+    final a = validAfter.toRadixString(16).padLeft(12, '0');
+    final u = validUntil.toRadixString(16).padLeft(12, '0');
+    var result = '0x$hex$a$u';
+    if (paymasterTokenAddress != null && paymasterTokenAddress.isNotEmpty) {
+      final tokenHex = paymasterTokenAddress
+          .replaceFirst(RegExp('^0x'), '')
+          .padLeft(40, '0');
+      result = '$result$tokenHex';
+    }
+    if (amountToApprove != null) {
+      result = '$result${amountToApprove.toRadixString(16).padLeft(64, '0')}';
+    }
+    return result;
   }
 
   /// Signs a SafeOperation (adds signer's signature).
@@ -192,12 +275,54 @@ class Safe4337Pack {
   }
 
   /// Sends the signed SafeOperation to the bundler; returns userOpHash.
-  Future<String> executeTransaction({required SafeOperation executable}) async {
-    final hash = await bundlerClient.sendUserOperation(
-      userOperation: executable.userOperation,
+  ///
+  /// Encodes [SafeOperation.signatures] into [UserOperation.signature] using
+  /// [owners] and [threshold]. When null, uses the pack's stored owners/threshold
+  /// from init (PredictedSafeOptions). For an existing Safe, pass [owners] and
+  /// [threshold] so signatures are encoded in the correct order.
+  Future<String> executeTransaction({
+    required SafeOperation executable,
+    List<String>? owners,
+    int? threshold,
+    int validAfter = 0,
+    int validUntil = 0,
+  }) async {
+    final uo = executable.userOperation;
+    final sortedOwners = owners ?? _owners;
+    final th = threshold ?? _threshold;
+
+    var signature = uo.signature;
+    if (executable.signatures.isNotEmpty &&
+        sortedOwners != null &&
+        sortedOwners.isNotEmpty &&
+        th != null &&
+        th > 0) {
+      signature = encodeSafe4337Signature(
+        validAfter: validAfter,
+        validUntil: validUntil,
+        sortedOwners: sortedOwners,
+        signatures: executable.signatures,
+      );
+    }
+
+    final userOp = UserOperation(
+      sender: uo.sender,
+      nonce: uo.nonce,
+      initCode: uo.initCode,
+      callData: uo.callData,
+      callGasLimit: uo.callGasLimit,
+      verificationGasLimit: uo.verificationGasLimit,
+      preVerificationGas: uo.preVerificationGas,
+      maxFeePerGas: uo.maxFeePerGas,
+      maxPriorityFeePerGas: uo.maxPriorityFeePerGas,
+      paymasterAndData: uo.paymasterAndData,
+      signature: signature,
+    );
+
+    return bundlerClient.sendUserOperation(
+      userOperation: userOp,
       entryPoint: entryPointAddress,
     );
-    return hash;
   }
 
   /// Fetches UserOperation by hash.
@@ -216,8 +341,8 @@ class Safe4337Pack {
 
   /// Exposes a context so consumer can set signer
   /// (mirrors protocolKit.getSafeProvider().signer).
-  // ignore: use_setters_to_change_properties - setter would shadow field
   void setSigner(dynamic s) {
+    if (identical(signer, s)) return;
     signer = s;
   }
 }

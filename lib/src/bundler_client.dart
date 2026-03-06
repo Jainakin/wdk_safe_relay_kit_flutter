@@ -6,15 +6,28 @@ import 'package:wdk_safe_relay_kit_flutter/src/types/user_operation.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/types/user_operation_receipt.dart';
 import 'package:wdk_safe_relay_kit_flutter/src/types/user_operation_with_payload.dart';
 
+/// Type for injecting HTTP POST in tests (e.g. mock responses).
+typedef BundlerHttpPost = Future<http.Response> Function(
+  Uri uri, {
+  Map<String, String>? headers,
+  Object? body,
+});
+
 /// Client for ERC-4337 bundler JSON-RPC (eth_sendUserOperation, etc.).
+/// Serialization uses the common UserOperation shape; add EntryPoint v0.7
+/// fields (e.g. aggregator) to [userOpToParams] when required.
 class BundlerClient {
   BundlerClient({
     required this.bundlerUrl,
     this.entryPointAddress,
+    this.httpPost,
   });
 
   final String bundlerUrl;
   final String? entryPointAddress;
+
+  /// Optional HTTP POST; when null, uses [http.post]. Set in tests to mock.
+  final BundlerHttpPost? httpPost;
 
   /// Sends a UserOperation to the bundler.
   /// Returns the userOpHash.
@@ -97,7 +110,8 @@ class BundlerClient {
       'method': method,
       'params': params,
     });
-    final response = await http.post(
+    final post = httpPost ?? http.post;
+    final response = await post(
       Uri.parse(bundlerUrl),
       headers: {'Content-Type': 'application/json'},
       body: body,
@@ -116,6 +130,12 @@ class BundlerClient {
       throw BundlerRpcException(msg);
     }
     return data['result'];
+  }
+
+  /// Serializes [UserOperation] to JSON-RPC params
+  /// (e.g. for paymaster or bundler).
+  static Map<String, dynamic> userOpToParams(UserOperation op) {
+    return _userOpToParams(op);
   }
 
   static Map<String, dynamic> _userOpToParams(UserOperation op) {
